@@ -1,0 +1,164 @@
+---
+title: "STAT 4052 Project - Diabetes Progression"
+output: pdf_document
+date: "2026-05-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Libraries Used:
+library(lars)
+library(caret) 
+library(MASS)  
+library(glmnet)
+library(randomForest)
+```
+
+```{r}
+# Loading the dataset
+data(diabetes)
+
+# Fixing issue with lars package diabetes dataset format
+# Forcing every column to be a standard numeric vector
+temp_x <- as.matrix(diabetes$x)
+
+diabetes_df <- data.frame(
+  age = as.numeric(temp_x[, "age"]),
+  sex = as.numeric(temp_x[, "sex"]),
+  bmi = as.numeric(temp_x[, "bmi"]),
+  map = as.numeric(temp_x[, "map"]),
+  tc  = as.numeric(temp_x[, "tc"]),
+  ldl = as.numeric(temp_x[, "ldl"]),
+  hdl = as.numeric(temp_x[, "hdl"]),
+  tch = as.numeric(temp_x[, "tch"]),
+  ltg = as.numeric(temp_x[, "ltg"]),
+  glu = as.numeric(temp_x[, "glu"])
+)
+
+# Attach the response variable as a standard numeric vector
+diabetes_df$progression <- as.numeric(diabetes$y)
+
+# Train/Test Split (80/20 split)
+set.seed(4052) 
+train_index <- createDataPartition(diabetes_df$progression, p = 0.8, list = FALSE)
+train_data <- diabetes_df[train_index, ]
+test_data  <- diabetes_df[-train_index, ]
+```
+
+```{r}
+# Fitting a full multiple linear regression model using the training data
+baseline_model <- lm(progression ~ ., data = train_data)
+
+# Run the Box-Cox transformation
+# Lambda from -2 to 2 for now
+bc <- boxcox(baseline_model, lambda = seq(-2, 2, by = 0.1))
+
+# Find and print the exact lambda that maximizes the log-likelihood
+optimal_lambda <- bc$x[which.max(bc$y)]
+print(paste("Optimal Lambda:", optimal_lambda))
+```
+
+```{r}
+# Sqrt Box-Cox Transformation (lambda ~= 0.5)
+train_data$progression_sqrt <- sqrt(train_data$progression)
+test_data$progression_sqrt <- sqrt(test_data$progression)
+
+# Cleaning datasets: Remove the original 'progression' variable
+train_data_clean <- train_data
+train_data_clean$progression <- NULL
+
+test_data_clean <- test_data
+test_data_clean$progression <- NULL
+```
+
+```{r}
+# Model 1: Multiple Linear Regression
+model_mlr <- lm(progression_sqrt ~ ., data = train_data_clean)
+
+# Model 2: Lasso Regression
+# matrix formatting for glmnet
+x_train <- as.matrix(train_data_clean[, -which(names(train_data_clean) == "progression_sqrt")])
+y_train <- train_data_clean$progression_sqrt
+x_test  <- as.matrix(test_data_clean[, -which(names(test_data_clean) == "progression_sqrt")])
+y_test  <- test_data_clean$progression_sqrt
+
+# Cross-validation for optimal lambda
+set.seed(4052)
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1)
+best_lambda <- cv_lasso$lambda.min
+model_lasso <- glmnet(x_train, y_train, alpha = 1, lambda = best_lambda)
+
+# Model 3: Random Forest
+set.seed(4052)
+model_rf <- randomForest(progression_sqrt ~ ., data = train_data_clean, importance = TRUE)
+
+# Evaluation on held-out test set
+pred_mlr   <- predict(model_mlr, newdata = test_data_clean)
+pred_lasso <- predict(model_lasso, s = best_lambda, newx = x_test)
+pred_rf    <- predict(model_rf, newdata = test_data_clean)
+
+rmse_mlr   <- sqrt(mean((pred_mlr - y_test)^2))
+rmse_lasso <- sqrt(mean((pred_lasso - y_test)^2))
+rmse_rf    <- sqrt(mean((pred_rf - y_test)^2))
+
+print(paste("MLR RMSE:", round(rmse_mlr, 3)))
+print(paste("Lasso RMSE:", round(rmse_lasso, 3)))
+print(paste("Random Forest RMSE:", round(rmse_rf, 3)))
+```
+
+```{r}
+# Lasso Evaluation
+# Calculate the Total Sum of Squares (TSS) for the test set
+# Total variance in the true test data
+mean_y_test <- mean(y_test)
+tss <- sum((y_test - mean_y_test)^2)
+
+# Residual Sum of Squares (RSS)
+rss_lasso <- sum((pred_lasso - y_test)^2)
+
+# Test R-squared
+r_squared_lasso <- 1 - (rss_lasso / tss)
+
+# Mean Absolute Error (MAE)
+mae_lasso <- mean(abs(pred_lasso - y_test))
+
+# MLR Evaluation
+rss_mlr <- sum((pred_mlr - y_test)^2)
+r_squared_mlr <- 1 - (rss_mlr / tss)
+mae_mlr <- mean(abs(pred_mlr - y_test))
+
+# Random Forest Evaluation
+rss_rf <- sum((pred_rf - y_test)^2)
+r_squared_rf <- 1 - (rss_rf / tss)
+mae_rf <- mean(abs(pred_rf - y_test))
+
+print(paste("Lasso Test R-squared:", round(r_squared_lasso, 3)))
+print(paste("Lasso Test MAE:", round(mae_lasso, 3)))
+print(paste("MLR Test R-squared:", round(r_squared_mlr, 3)))
+print(paste("MLR Test MAE:", round(mae_mlr, 3)))
+print(paste("RF Test R-squared:", round(r_squared_rf, 3)))
+print(paste("RF Test MAE:", round(mae_rf, 3)))
+```
+
+```{r}
+#Result Visualizations
+
+# Plot 1: Lasso Cross-Validation Curve
+# This shows how the model tuned the penalty parameter (lambda)
+
+# Fixing top margin for formatting
+par(mar = c(5.1, 4.1, 6.1, 2.1))
+
+plot(cv_lasso)
+
+title("Lasso Cross-Validation Error Curve", line = 4)
+
+par(mar = c(5.1, 4.1, 4.1, 2.1))
+
+# Plot 2: Random Forest Variable Importance
+# This shows which predictors were most useful in reducing error
+varImpPlot(model_rf, main = "Random Forest Variable Importance")
+```
